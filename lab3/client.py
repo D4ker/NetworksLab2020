@@ -95,9 +95,16 @@ def dataResponse(client, packetEnd):
         if len(blockData) < 512:
             # disconnect(client) не отключаем, клиент сам отключится и произойдёт обработка в исключении
             if data['file_mode'] == OCTET_MODE:
-                f = open(data['file_name'], 'xb')
-                f.write(data['file_data'])
-                f.close()
+                try:
+                    f = open(data['file_name'], 'xb')
+                    f.write(data['file_data'])
+                    f.close()
+                except FileExistsError:
+                    # Ошибка: файл уже есть (видимо, этого клиента перегнал другой (если работать с одним диском)))
+                    print("Current local file is exists")
+                    client.close()
+                    CONNECT_WORKING = False
+                    return
 
                 # Надо сделать по таймауту
                 sendAck(client, blockNum)
