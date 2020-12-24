@@ -10,7 +10,7 @@ CLIENT_WORKING = True
 CONNECT_WORKING = True
 SERVER_IP = "127.0.0.1"
 # SERVER_IP = "51.15.130.137"
-SERVER_PORT = 4000
+SERVER_PORT = 4002
 
 RRQ = 1
 WRQ = 2
@@ -20,14 +20,28 @@ ERROR = 5
 
 OCTET_MODE = 'octet'
 
+ERRORS = {
+    "ND": {
+        "code": 0,
+        "msg": "Unknown error."
+    },
+    "FNF": {
+        "code": 1,
+        "msg": "File not found."
+    },
+    "ITO": {
+        "code": 4,
+        "msg": "Illegal TFTP operation."
+    },
+    "FAE": {
+        "code": 6,
+        "msg": "File already exists."
+    }
+}
+
 data = {}  # данные (!) для работы с сервером
 
-def clientTime():
-    return datetime.timestamp(datetime.now())
-
-def getData(time, nickname, message):
-    data = f"{time}\0{nickname}\0{message}".encode("ascii")
-    return f"{len(data):<{HEADER}}".encode("ascii") + data
+server = (SERVER_IP, SERVER_PORT)
 
 def parseCommand(command):
     commandList = command.split(" ")
@@ -58,16 +72,17 @@ def sendData(client, oldFileData, blockNum):
     data['block_data'] = blockData
     data['file_data'] = fileData
 
-    client.send(packet)
+    client.sendto(packet, server)
 
 # Функция для отправки ACK клиенту
 def sendAck(client, blockNum):
     packet = struct.pack(f"!HH", ACK, blockNum)
     data['block_num'] = blockNum
-    client.send(packet)
+    client.sendto(packet, server)
 
 # Функция для обработки DATA ответа
 def dataResponse(client, packetEnd):
+    global CONNECT_WORKING
     (strBlockNum,), blockData = struct.unpack("!H", packetEnd[:2]), packetEnd[2:]
     blockNum = int(strBlockNum)
     oldBlockNum = data['block_num']
@@ -83,9 +98,15 @@ def dataResponse(client, packetEnd):
                 f = open(data['file_name'], 'xb')
                 f.write(data['file_data'])
                 f.close()
+
+                # Надо сделать по таймауту
+                sendAck(client, blockNum)
+                client.close()
+                CONNECT_WORKING = False
+                return
             else:
                 print("Error: Mode Not Found")
-            return
+                return
 
         sendAck(client, blockNum)
 
@@ -94,6 +115,7 @@ def ackResponse(client, packetEnd):
     global CONNECT_WORKING
     (strBlockNum,) = struct.unpack("!H", packetEnd)
     blockNum = int(strBlockNum)
+    print(f"BLOCK = {blockNum}")
     if data['block_num'] == blockNum:
         if blockNum != 0 and len(data['block_data']) < 512:
             client.close()
@@ -108,6 +130,22 @@ def ackResponse(client, packetEnd):
     else:
         print("Error. Unknown block")
 
+def printError(code, msg):
+    for errorKey in ERRORS:
+        if code == ERRORS[errorKey]["code"]:
+            print(f"Error: " + msg)
+            return
+    print("Error: Server sent an error packet with an unknown code")
+
+def errorResponse(client, packetEnd):
+    global CONNECT_WORKING
+    (strErrorCode,), errorData = struct.unpack("!H", packetEnd[:2]), packetEnd[2:]
+    errorCode = int(strErrorCode)
+    errorMsg = errorData.split(b'\x00')[0].decode("ascii")
+
+    printError(errorCode, errorMsg)
+    CONNECT_WORKING = False
+    client.close()
 
 # Функция для обработки информации, приходящей с сервера
 def receive(client):
@@ -115,8 +153,9 @@ def receive(client):
     try:
         while CONNECT_WORKING:
             # Получаем пакет с информацией, что нужно хосту от сервера
-            packet = client.recv(HEADER)
+            packet = client.recvfrom(HEADER)[0]
             # https://stackoverflow.com/a/3753685
+            print(f"PACKET = {packet}")
             (typeOp,), packetEnd = struct.unpack("!H", packet[:2]), packet[2:]
             print(typeOp)
 
@@ -128,7 +167,7 @@ def receive(client):
                 ackResponse(client, packetEnd)
                 textOp = "ACK"
             elif typeOp == ERROR:
-                print("5 type")
+                errorResponse(client, packetEnd)
                 textOp = "ERROR"
 
             print(f"Server -> " + textOp)
@@ -177,12 +216,13 @@ def clientStart():
             else:
                 print("Error: Mode Not Found")
 
-            client = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            client = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            print(client)
             try:
-                client.connect((SERVER_IP, SERVER_PORT))
-                client.send(packet)
+                client.sendto(packet, server)
                 CONNECT_WORKING = True
                 receive(client)
+                continue
             except ConnectionRefusedError:
                 print(f"Server ({SERVER_IP}:{SERVER_PORT}) is not available")
 

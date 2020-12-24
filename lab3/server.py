@@ -2,6 +2,7 @@ import os
 import selectors
 import socket
 import struct
+import threading
 import time
 from datetime import datetime
 
@@ -9,7 +10,7 @@ HEADER = 600
 SERVER_WORKING = True
 HOST = "127.0.0.1"  # ip сервера (localhost)
 # HOST = "0.0.0.0"
-PORT = 4000  # порт
+PORT = 4002  # порт
 
 RRQ = 1
 WRQ = 2
@@ -19,11 +20,29 @@ ERROR = 5
 
 OCTET_MODE = 'octet'
 
-server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+ERRORS = {
+    "ND": {
+        "code": 0,
+        "msg": "Unknown error."
+    },
+    "FNF": {
+        "code": 1,
+        "msg": "File not found."
+    },
+    "ITO": {
+        "code": 4,
+        "msg": "Illegal TFTP operation."
+    },
+    "FAE": {
+        "code": 6,
+        "msg": "File already exists."
+    }
+}
+
+server = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 server.bind((HOST, PORT))
 
-server.listen(5)
-server.setblocking(False)
+#server.setblocking(False)
 sel = selectors.DefaultSelector()
 
 clients = {}  # адреса и данные (!) подключенных клиентов
@@ -32,24 +51,15 @@ def serverTime():
     return datetime.timestamp(datetime.now())
 
 def serverTimeFormat(mytime):
-    return datetime.strftime(datetime.fromtimestamp(mytime  + time.timezone), "%Y-%m-%d-%H.%M.%S")
+    return datetime.strftime(datetime.fromtimestamp(mytime + time.timezone), "%Y-%m-%d-%H.%M.%S")
 
 def printLog(time, message):
     print(f"[{serverTimeFormat(time)}]/[log]: {message}")
 
-# Функция для отправки сообщения подключенным пользователям
-def broadcast(muteClient, data):
-    for client in clients.keys():
-        if client != muteClient:
-            client.send(data)
-
 # Функция для отключения клиента от сервера
 def disconnect(client):
-    addres = client.getsockname()
-    sel.unregister(client)
     clients.pop(client)
-    client.close()
-    leftmsg = f"[{addres[0]}:{str(addres[1])}] -> DISCONNECT"
+    leftmsg = f"[{client[0]}:{str(client[1])}] -> DISCONNECT"
     printLog(serverTime(), leftmsg)
 
 # Функция для отправки блока данных клиенту
@@ -62,13 +72,29 @@ def sendData(client, oldFileData, blockNum):
     clients[client]['block_data'] = blockData
     clients[client]['file_data'] = fileData
 
-    client.send(packet)
+    server.sendto(packet, client)
 
 # Функция для отправки ACK клиенту
 def sendAck(client, blockNum):
     packet = struct.pack(f"!HH", ACK, blockNum)
     clients[client]['block_num'] = blockNum
-    client.send(packet)
+    server.sendto(packet, client)
+
+# Функция для отправки ошибки клиенту
+def sendError(client, error):
+    code = error["code"]
+    msg = error["msg"]
+    packet = struct.pack(f"!HH{len(msg)}sx", ERROR, code, bytes(msg, "ascii"))
+    disconnect(client)
+    server.sendto(packet, client)
+
+# Функция для отправки нестандартной ошибки клиенту
+def sendErrorWithMsg(client, msg):
+    error = {
+        "code": ERRORS["ND"]["code"],
+        "msg": msg
+    }
+    sendError(client, error)
 
 # Функция для обработки RRQ запроса
 def readRequest(client, packetEnd):
@@ -90,10 +116,11 @@ def readRequest(client, packetEnd):
             sendData(client, fileData, blockNum)
         else:
             print("Error: Mode Not Found")
-    except FileNotFoundError as e:
+    except FileNotFoundError:
         print("Error: FileNotFoundError")
-        # ТУТ ОТПРАВЛЯТЬ ОШИБКУ КЛИЕНТУ
-        print(e)
+
+        # Отправляем ошибку клиенту (файл отсутствует на сервере)
+        sendError(client, ERRORS["FNF"])
 
 # Функция для обработки WRQ запроса
 def writeRequest(client, packetEnd):
@@ -102,11 +129,15 @@ def writeRequest(client, packetEnd):
     mode = fileAndMode[1].decode("ascii")
     print(fileName)
     print(mode)
+    print(client)
+    print(f"\nCLIENTS:    {clients}")
 
     try:
         if os.path.exists(fileName):
             print("Error. File Is Exists")
-            # ТУТ ОТПРАВЛЯТЬ ОШИБКУ КЛИЕНТУ
+
+            # Отправляем ошибку клиенту (файл уже есть)
+            sendError(client, ERRORS["FAE"])
         else:
             blockNum = 0
             clients[client]['file_name'] = fileName
@@ -118,7 +149,10 @@ def writeRequest(client, packetEnd):
             sendAck(client, blockNum)
     except ValueError:
         print("Error path")
-        # ТУТ ОТПРАВЛЯТЬ ОШИБКУ КЛИЕНТУ
+
+        # Отправляем ошибку клиенту
+        msg = "Illegal path."
+        sendErrorWithMsg(client, msg)
 
 # Функция для обработки DATA ответа
 def dataResponse(client, packetEnd):
@@ -129,17 +163,23 @@ def dataResponse(client, packetEnd):
     if oldBlockNum == blockNum:
         sendAck(client, blockNum)
     elif oldBlockNum + 1 == blockNum:
+        print(f"BLOCK = {blockNum}")
         clients[client]['file_data'] += blockData
 
         if len(blockData) < 512:
             # disconnect(client) не отключаем, клиент сам отключится и произойдёт обработка в исключении
             if clients[client]['file_mode'] == OCTET_MODE:
-                f = open(clients[client]['file_name'], 'xb')
-                f.write(clients[client]['file_data'])
-                f.close()
+                try:
+                    f = open(clients[client]['file_name'], 'xb')
+                    f.write(clients[client]['file_data'])
+                    f.close()
+                except FileExistsError:
+                    # Отправляем ошибку клиенту (файл уже есть (видимо, этого клиента перегнал другой))
+                    sendError(client, ERRORS["FAE"])
+                    return
             else:
                 print("Error: Mode Not Found")
-            return
+                return
 
         sendAck(client, blockNum)
 
@@ -149,6 +189,8 @@ def ackResponse(client, packetEnd):
     blockNum = int(strBlockNum)
     if clients[client]['block_num'] == blockNum:
         if len(clients[client]['block_data']) < 512:
+
+            # Надо сделать по таймауту
             disconnect(client)
             return
         blockNum += 1
@@ -160,64 +202,70 @@ def ackResponse(client, packetEnd):
     else:
         print("Error. Unknown block")
 
+def performOperation(client, packet):
+    # https://stackoverflow.com/a/3753685
+    (typeOp,), packetEnd = struct.unpack("!H", packet[:2]), packet[2:]
+    print(packet)
+    print(typeOp)
+
+    if typeOp == RRQ:
+        readRequest(client, packetEnd)
+        return "RRQ"
+    elif typeOp == WRQ:
+        writeRequest(client, packetEnd)
+        return "WRQ"
+    elif typeOp == DATA:
+        dataResponse(client, packetEnd)
+        return "DATA"
+    elif typeOp == ACK:
+        ackResponse(client, packetEnd)
+        return "ACK"
+    elif typeOp == ERROR:
+        print("5 type")
+        return "ERROR"
+
+    # Отправляем ошибку (неизвестный код операции)
+    sendError(client, ERRORS["ITO"])
+    return "???"
+
 # Функция для работы с клиентом. Получаем сообщения и обрабатываем их
-def handle(client):
+def handle(server):
+    client = None
     try:
-        if SERVER_WORKING:
+        while SERVER_WORKING:
             # Получаем пакет с информацией, что нужно хосту от сервера
-            packet = client.recv(HEADER)
-            # https://stackoverflow.com/a/3753685
-            (typeOp,), packetEnd = struct.unpack("!H", packet[:2]), packet[2:]
-            print(packet)
-            print(typeOp)
+            packet, client = server.recvfrom(HEADER)
+            if client not in clients:
+                clients[client] = {}
+                print(f"Client - {client}")
+                printLog(serverTime(), f"Connected with {str(client)}")
 
-            textOp = "???"
-            if typeOp == RRQ:
-                readRequest(client, packetEnd)
-                textOp = "RRQ"
-            elif typeOp == WRQ:
-                writeRequest(client, packetEnd)
-                textOp = "WRQ"
-            elif typeOp == DATA:
-                dataResponse(client, packetEnd)
-                textOp = "DATA"
-            elif typeOp == ACK:
-                ackResponse(client, packetEnd)
-                textOp = "ACK"
-            elif typeOp == ERROR:
-                print("5 type")
-                textOp = "ERROR"
+            textOp = performOperation(client, packet)
 
-            addres = client.getsockname()
-            printLog(serverTime(), f"[{addres[0]}:{str(addres[1])}] -> " + textOp)
+            printLog(serverTime(), f"[{client[0]}:{str(client[1])}] -> " + textOp)
 
     except ConnectionResetError:
-        # Сработает также в случае, когда клиент загрузит на сервер файл и отключится
-        disconnect(client)
+        # Сработает также в случае, когда клиент загрузит на сервер файл и отключится (нет)
+        if client != None:
+            disconnect(client)
 
 # Функция для обработки подключения пользователей к серверу
 def receive(server):
     global SERVER_WORKING
     try:
-        if SERVER_WORKING:
-            client, addres = server.accept()
-            clients[client] = {}
-            printLog(serverTime(), f"Connected with {str(addres)}")
-            client.setblocking(False)
-            sel.register(fileobj=client, events=selectors.EVENT_READ, data=handle)
+        while SERVER_WORKING:
+            # sel.register(fileobj=client, events=selectors.EVENT_READ, data=handle)
+            print()
+
     except KeyboardInterrupt:
         SERVER_WORKING = False
         print("---Server Stopped---")
-        for client in clients.keys():
-            sel.unregister(client)
-            client.close()
         clients.clear()
         server.close()
         exit(0)
 
 def startServer():
-    # Src: https://docs.python.org/3/library/selectors.html#examples
-    sel.register(fileobj=server, events=selectors.EVENT_READ, data=receive)
+    sel.register(fileobj=server, events=selectors.EVENT_READ, data=handle)
     print("---Server Started---")
 
     while True:

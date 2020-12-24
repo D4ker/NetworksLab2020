@@ -1,4 +1,4 @@
-CLIENT FILE
+SERVER FILE
 
 hello! First file HERE.
 Text
