@@ -1,0 +1,18 @@
+{
+	"clients": {
+		"D4ker": {
+			"pass": "mypass123",
+			"last_test": {
+				"name": "Test 555",
+				"result": "33.33"
+			}
+		},
+		"DoomerLM": {
+			"pass": "podliza",
+			"last_test": {
+				"name": "",
+				"result": "-1"
+			}
+		}
+	}
+}
