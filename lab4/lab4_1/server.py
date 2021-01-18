@@ -6,12 +6,12 @@ import threading
 import time
 from datetime import datetime
 
-HEADER = 600
+HEADER = 4096
 SERVER_WORKING = True
 SERVER_CLOSE = False
 HOST = "127.0.0.1"  # ip сервера (localhost)
 # HOST = "0.0.0.0"
-PORT = 4000  # порт
+PORT = 4003  # порт
 
 TYPES = {
     # Сокращения для типов пакетов сервера
@@ -66,7 +66,7 @@ def serverTime():
     return datetime.timestamp(datetime.now())
 
 def serverTimeFormat(mytime):
-    return datetime.strftime(datetime.fromtimestamp(mytime  + time.timezone), "%Y-%m-%d-%H.%M.%S")
+    return datetime.strftime(datetime.fromtimestamp(mytime + time.timezone), "%Y-%m-%d-%H.%M.%S")
 
 def printLog(time, message):
     print(f"[{serverTimeFormat(time)}]/[log]: {message}")
@@ -92,15 +92,13 @@ def createList():
             if uid.isdigit():
                 name = getJSONfromFile(file)["name"]
                 data[uid] = name
-                print("The Path is: " + str(file))
 
-    setJSONtoFile("list_test4.txt", data)
+    setJSONtoFile("list.json", data)
 
 # Функция для отключения клиента от сервера ***
 def disconnect(client):
     addres = client.getsockname()
     clients.pop(client)
-    client.shutdown()
     client.close()
     leftmsg = f"[{addres[0]}:{str(addres[1])}] -> DISCONNECT"
     printLog(serverTime(), leftmsg)
@@ -114,8 +112,12 @@ def disconnectAll():
     SERVER_CLOSE = True
     print("---Server Stopped---")
     if clients:
-        for client in clients:
-            sendDisconnect(client)
+        for client in list(clients):
+            # Если пользователь был авторизован - отключить безопасно. Иначе - отключить сразу
+            if "login" in clients[client]:
+                sendDisconnect(client)
+            else:
+                disconnect(client)
     else:
         SERVER_WORKING = False
         server.close()
@@ -243,7 +245,7 @@ def authRequest(client, packet):
     jsonData = getJSONfromFile("users.json")
 
     # Если такой пользователь существует и пароль правильный - авторизация успешна
-    if packet["login"] in clients and packet["pass"] == jsonData["clients"]["login"]["pass"]:
+    if packet["login"] in jsonData["clients"] and packet["pass"] == jsonData["clients"][packet["login"]]["pass"]:
         # Запоминаем, что пользователь успешно авторизовался (его ник)
         clients[client]["login"] = packet["login"]
         clients[client]["online"] = True
@@ -332,11 +334,10 @@ def handle(client):
     try:
         while SERVER_WORKING:
             # Получаем пакет с информацией, что нужно клиенту от сервера
-            packet = json.load(client.recv(HEADER).decode("utf-8"))
+            packet = json.loads(client.recv(HEADER).decode("utf-8"))
+            print(packet)
 
             typeOp = packet["type"]
-            print(packet)
-            print(typeOp)
 
             textOp = "???"
             # Сначала проверяем, авторизован ли уже пользователь (ведь login есть только у авторизованных)
@@ -364,13 +365,15 @@ def handle(client):
                     disconnectRequest(client)
                     textOp = "DSC"
 
-            addres = client.getsockname()
-            printLog(serverTime(), f"[{addres[0]}:{str(addres[1])}] -> " + textOp)
+            if client in clients:
+                addres = client.getsockname()
+                printLog(serverTime(), f"[{addres[0]}:{str(addres[1])}] -> " + textOp)
 
-    except ConnectionResetError:
-        print("NOOOOOOOOOOOOOO ERROR")
+    except (ConnectionResetError):
         # Сработает также в случае, когда клиент отключится с помощью ctrl + c
         disconnect(client)
+    except:
+        pass
 
 # Функция для обработки подключения пользователей к серверу
 def receive(server):
@@ -378,11 +381,11 @@ def receive(server):
     try:
         while SERVER_WORKING:
             client, addres = server.accept()
-            printLog(serverTimeFormat(serverTime()), f"Connected with {str(addres)}")
+            printLog(serverTime(), f"Connected with {str(addres)}")
 
             clients[client] = {}
 
-            thread = threading.Thread(target=handle, args=client)
+            thread = threading.Thread(target=handle, args=(client,))
             thread.start()
 
     except KeyboardInterrupt:
@@ -397,16 +400,17 @@ def write():
             while commandList == None:
                 # disconnect user
                 # stop
-                command = input("Enter command: ")
+                command = input("")
                 commandList = parseCommand(command)
 
                 typeCmd = commandList["type"]
                 if typeCmd == 0:
-                    for client in clients:
-                        if client["login"] == commandList["login"]:
+                    keys = clients.keys()
+                    for client in keys:
+                        if "login" in clients[client] and clients[client]["login"] == commandList["login"]:
                             sendDisconnect(client)
-                            continue
-                    print("Ошибка: Этот пользователь в данный момент не подключен к серверу")
+                            break
+                    # print("Ошибка: Этот пользователь в данный момент не подключен к серверу")
                 elif typeCmd == 1:
                     disconnectAll()
                 else:

@@ -1,18 +1,32 @@
 {
-	"clients": {
-		"D4ker": {
-			"pass": "mypass123",
-			"last_test": {
-				"name": "Test 555",
-				"result": "33.33"
-			}
-		},
-		"DoomerLM": {
-			"pass": "podliza",
-			"last_test": {
-				"name": "",
-				"result": "-1"
-			}
-		}
-	}
+    "clients": {
+        "D4ker": {
+            "pass": "mypass123",
+            "last_test": {
+                "name": "Тест 1: Физика.",
+                "result": "50.00"
+            }
+        },
+        "DoomerLM": {
+            "pass": "podliza",
+            "last_test": {
+                "name": "Тест 1: Физика.",
+                "result": "0.00"
+            }
+        },
+        "user": {
+            "pass": "user",
+            "last_test": {
+                "name": "",
+                "result": "-1"
+            }
+        },
+        "admin": {
+            "pass": "admin",
+            "last_test": {
+                "name": "",
+                "result": "-1"
+            }
+        }
+    }
 }
