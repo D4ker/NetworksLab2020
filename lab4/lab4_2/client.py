@@ -37,10 +37,11 @@ data = {}
 def disconnect(client):
     global CLIENT_WORKING
 
-    print("Disconnect")
-    CLIENT_WORKING = False
-    client.close()
-    exit(0)
+    if CLIENT_WORKING:
+        print("Вы были отключены от сервера")
+        CLIENT_WORKING = False
+        client.close()
+        exit(0)
 
 # Отправка пакета на сервер ***
 def sendPacket(client, packetDict, strCmd):
@@ -75,14 +76,15 @@ def receive(client):
             if typeOp == TYPES["SRV"]["ANS"]:
                 answerResponse(packet)
 
-    except (ConnectionResetError, ValueError):
+    except (ConnectionAbortedError, ConnectionResetError, ValueError):
         disconnect(client)
 
 # Парсинг команды ***
 def parseCommand(command):
     commandList = command.split(" ")
+    commandLength = len(commandList)
 
-    if len(commandList) == 3:
+    if commandLength == 3:
         x = commandList[0]
         y = commandList[2]
         op = commandList[1]
@@ -93,14 +95,14 @@ def parseCommand(command):
                 "operation": opString.index(op),
                 "arg": [float(x), float(y)]
             }
-    elif len(commandList) == 2:
+    elif commandLength == 2:
         x = commandList[1]
         op = commandList[0]
         if x.isdigit():
-            if op == "sqrt":
-                opCode = SQRT
-            elif op == "fact":
+            if op == "fact":
                 opCode = FACT
+            elif op == "sqrt":
+                opCode = SQRT
             else:
                 return {"type": -1}
             return {
@@ -108,6 +110,9 @@ def parseCommand(command):
                 "operation": opCode,
                 "arg": [float(x)]
             }
+    elif commandLength == 1:
+        if commandList[0] == "disconnect":
+            return {"type": 2}
     return {"type": -1}
 
 # Печать в консоль всех доступных операций ***
@@ -134,6 +139,9 @@ def write(client):
             typeCmd = commandDict["type"]
             if typeCmd == TYPES["CLT"]["QCK"] or typeCmd == TYPES["CLT"]["LNG"]:
                 sendPacket(client, commandDict, command)
+            elif typeCmd == 2:
+                disconnect(client)
+                break
             else:
                 print("Ошибка: Неизвестная команда")
 
