@@ -79,6 +79,17 @@ def receive(client):
     except (ConnectionAbortedError, ConnectionResetError, ValueError):
         disconnect(client)
 
+# Вспомогательная функция для чисел с плавающей запятой ***
+def is_digit(string):
+    if string.isdigit():
+       return True
+    else:
+        try:
+            float(string)
+            return True
+        except ValueError:
+            return False
+
 # Парсинг команды ***
 def parseCommand(command):
     commandList = command.split(" ")
@@ -89,7 +100,7 @@ def parseCommand(command):
         y = commandList[2]
         op = commandList[1]
         # Первый и последний аргументы - числа, между ними - один символ, который также находится в строке opString
-        if x.isdigit() and y.isdigit() and len(op) == 1 and op in opString:
+        if is_digit(x) and is_digit(y) and len(op) == 1 and op in opString:
             return {
                 "type": 0,
                 "operation": opString.index(op),
@@ -98,7 +109,7 @@ def parseCommand(command):
     elif commandLength == 2:
         x = commandList[1]
         op = commandList[0]
-        if x.isdigit():
+        if is_digit(x):
             if op == "fact":
                 opCode = FACT
             elif op == "sqrt":
