@@ -2,7 +2,6 @@ import os
 import selectors
 import socket
 import struct
-import threading
 import time
 from datetime import datetime
 
@@ -10,7 +9,7 @@ HEADER = 600
 SERVER_WORKING = True
 HOST = "127.0.0.1"  # ip сервера (localhost)
 # HOST = "0.0.0.0"
-PORT = 4002  # порт
+PORT = 4004  # порт
 
 RRQ = 1
 WRQ = 2
@@ -56,6 +55,12 @@ def serverTimeFormat(mytime):
 def printLog(time, message):
     print(f"[{serverTimeFormat(time)}]/[log]: {message}")
 
+# Вспомогательная функция для закрытия файла, если он был открыт
+def closeFile(client):
+    if 'file' in clients[client]:
+        clients[client]['file'].close()
+        del clients[client]['file']
+
 # Функция для отключения клиента от сервера
 def disconnect(client):
     clients.pop(client)
@@ -63,14 +68,13 @@ def disconnect(client):
     printLog(serverTime(), leftmsg)
 
 # Функция для отправки блока данных клиенту
-def sendData(client, oldFileData, blockNum):
-    blockData = oldFileData[:512]
-    fileData = oldFileData[512:]
+def sendData(client, blockNum):
+    # Считываем из файла следующие 512 байт
+    blockData = clients[client]['file'].read(512)
     packet = struct.pack(f"!HH{len(blockData)}s", DATA, blockNum, blockData)
 
     clients[client]['block_num'] = blockNum
     clients[client]['block_data'] = blockData
-    clients[client]['file_data'] = fileData
 
     server.sendto(packet, client)
 
@@ -107,17 +111,16 @@ def readRequest(client, packetEnd):
         print(mode)
 
         if mode == OCTET_MODE:
-            f = open(fileName, 'rb')
-            fileData = f.read()
-            f.close()
-            print(fileData)
+            # Сохраняем открытый файл, из которого будем считывать информацию по 512 байт
+            clients[client]['file'] = open(fileName, 'rb')
 
             blockNum = 1
-            sendData(client, fileData, blockNum)
+            sendData(client, blockNum)
         else:
             print("Error: Mode Not Found")
     except FileNotFoundError:
         print("Error: FileNotFoundError")
+        closeFile(client)
 
         # Отправляем ошибку клиенту (файл отсутствует на сервере)
         sendError(client, ERRORS["FNF"])
@@ -139,12 +142,13 @@ def writeRequest(client, packetEnd):
             # Отправляем ошибку клиенту (файл уже есть)
             sendError(client, ERRORS["FAE"])
         else:
+            # Сохраняем открытый файл, в который будем записывать информацию по 512 байт
+            clients[client]['file'] = open(fileName, 'xb')
+
             blockNum = 0
             clients[client]['file_name'] = fileName
             clients[client]['file_mode'] = mode
-            if mode == OCTET_MODE:
-                clients[client]['file_data'] = b''
-            else:
+            if mode != OCTET_MODE:
                 print("Error: Mode Not Found")
             sendAck(client, blockNum)
     except ValueError:
@@ -164,19 +168,13 @@ def dataResponse(client, packetEnd):
         sendAck(client, blockNum)
     elif oldBlockNum + 1 == blockNum:
         print(f"BLOCK = {blockNum}")
-        clients[client]['file_data'] += blockData
+        clients[client]['file'].write(blockData)
 
         if len(blockData) < 512:
             # disconnect(client) не отключаем, клиент сам отключится и произойдёт обработка в исключении
             if clients[client]['file_mode'] == OCTET_MODE:
-                try:
-                    f = open(clients[client]['file_name'], 'xb')
-                    f.write(clients[client]['file_data'])
-                    f.close()
-                except FileExistsError:
-                    # Отправляем ошибку клиенту (файл уже есть (видимо, этого клиента перегнал другой))
-                    sendError(client, ERRORS["FAE"])
-                    return
+                # Закрываем файл, так как все байты были получены
+                closeFile(client)
             else:
                 print("Error: Mode Not Found")
                 return
@@ -195,8 +193,7 @@ def ackResponse(client, packetEnd):
             return
         blockNum += 1
         if clients[client]['file_mode'] == OCTET_MODE:
-            fileData = clients[client]['file_data']
-            sendData(client, fileData, blockNum)
+            sendData(client, blockNum)
         else:
             print("Error: Mode Not Found")
     else:
@@ -247,6 +244,7 @@ def handle(server):
     except ConnectionResetError:
         # Сработает также в случае, когда клиент загрузит на сервер файл и отключится (нет)
         if client != None:
+            closeFile(client)
             disconnect(client)
 
 # Функция для обработки подключения пользователей к серверу
