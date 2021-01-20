@@ -3,14 +3,13 @@ import socket
 import struct
 import threading
 import time
-from datetime import datetime
 
 HEADER = 600
 CLIENT_WORKING = True
 CONNECT_WORKING = True
 SERVER_IP = "127.0.0.1"
 # SERVER_IP = "51.15.130.137"
-SERVER_PORT = 4002
+SERVER_PORT = 69
 
 RRQ = 1
 WRQ = 2
@@ -43,6 +42,12 @@ data = {}  # данные (!) для работы с сервером
 
 server = (SERVER_IP, SERVER_PORT)
 
+# Вспомогательная функция для закрытия файла, если он был открыт
+def closeFile():
+    if 'file' in data:
+        data['file'].close()
+        del data['file']
+
 def parseCommand(command):
     commandList = command.split(" ")
     try:
@@ -63,14 +68,13 @@ def parseCommand(command):
     return None
 
 # Функция для отправки блока данных клиенту
-def sendData(client, oldFileData, blockNum):
-    blockData = oldFileData[:512]
-    fileData = oldFileData[512:]
+def sendData(client, blockNum):
+    # Считываем из файла следующие 512 байт
+    blockData = data['file'].read(512)
     packet = struct.pack(f"!HH{len(blockData)}s", DATA, blockNum, blockData)
 
     data['block_num'] = blockNum
     data['block_data'] = blockData
-    data['file_data'] = fileData
 
     client.sendto(packet, server)
 
@@ -90,21 +94,27 @@ def dataResponse(client, packetEnd):
     if oldBlockNum == blockNum:
         sendAck(client, blockNum)
     elif oldBlockNum + 1 == blockNum:
-        data['file_data'] += blockData
+        # Если сейчас получаем только первый блок данных - открыть файл для записи
+        if 'file' not in data:
+            try:
+                # Сохраняем открытый файл, в который будем записывать информацию по 512 байт
+                data['file'] = open(data['file_name'], 'xb')
+            except FileExistsError:
+                # Ошибка: файл уже есть (видимо, этого клиента перегнал другой (если работать с одним диском)))
+                print("Current local file is exists")
+                closeFile()
+                client.close()
+                CONNECT_WORKING = False
+                return
+
+        # Записываем полученные 512 байт в файл
+        data['file'].write(blockData)
 
         if len(blockData) < 512:
             # disconnect(client) не отключаем, клиент сам отключится и произойдёт обработка в исключении
             if data['file_mode'] == OCTET_MODE:
-                try:
-                    f = open(data['file_name'], 'xb')
-                    f.write(data['file_data'])
-                    f.close()
-                except FileExistsError:
-                    # Ошибка: файл уже есть (видимо, этого клиента перегнал другой (если работать с одним диском)))
-                    print("Current local file is exists")
-                    client.close()
-                    CONNECT_WORKING = False
-                    return
+                # Закрываем файл, так как все байты были получены
+                closeFile()
 
                 # Надо сделать по таймауту
                 sendAck(client, blockNum)
@@ -125,13 +135,20 @@ def ackResponse(client, packetEnd):
     print(f"BLOCK = {blockNum}")
     if data['block_num'] == blockNum:
         if blockNum != 0 and len(data['block_data']) < 512:
+            # Закрываем файл, так как все байты были получены
+            closeFile()
+
             client.close()
             CONNECT_WORKING = False
             return
         blockNum += 1
         if data['file_mode'] == OCTET_MODE:
-            fileData = data['file_data']
-            sendData(client, fileData, blockNum)
+            # Если сейчас отправляем только первый блок данных - открыть файл для чтения
+            if 'file' not in data:
+                # Сохраняем открытый файл, из которого будем считывать информацию по 512 байт
+                data['file'] = open(data['file_name'], 'rb')
+
+            sendData(client, blockNum)
         else:
             print("Error: Mode Not Found")
     else:
@@ -180,11 +197,13 @@ def receive(client):
             print(f"Server -> " + textOp)
 
     except ConnectionResetError:
+        closeFile()
         CONNECT_WORKING = False
         print("Error")
         client.close()
         return
     except KeyboardInterrupt:
+        closeFile()
         CLIENT_WORKING = False
         CONNECT_WORKING = False
         print("Client Exit")
@@ -211,16 +230,7 @@ def clientStart():
             data['file_name'] = commandList[2]
             data['file_mode'] = mode
             data['block_num'] = 0
-            if mode == OCTET_MODE:
-                if typeOp == RRQ:
-                    data['file_data'] = b''
-                elif typeOp == WRQ:
-                    f = open(data['file_name'], 'rb')
-                    fileData = f.read()
-                    f.close()
-                    print(fileData)
-                    data['file_data'] = fileData
-            else:
+            if mode != OCTET_MODE:
                 print("Error: Mode Not Found")
 
             client = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -231,11 +241,13 @@ def clientStart():
                 receive(client)
                 continue
             except ConnectionRefusedError:
+                closeFile()
                 print(f"Server ({SERVER_IP}:{SERVER_PORT}) is not available")
 
             client = None
 
     except KeyboardInterrupt:
+        closeFile()
         CLIENT_WORKING = False
         CONNECT_WORKING = False
         print("Client Exit")
